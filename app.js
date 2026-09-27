@@ -6,22 +6,23 @@
 
 const STORE_KEY = "english-fox-v1";
 const STEPS = [
-  { k: "v1", lbl: "Palabras 1", icon: "📝" },
-  { k: "v2", lbl: "Palabras 2", icon: "🗣️" },
-  { k: "g1", lbl: "Gramática", icon: "🧠" },
-  { k: "g2", lbl: "Frases", icon: "✍️" },
-  { k: "r",  lbl: "Lectura", icon: "📖" },
-  { k: "x",  lbl: "Examen", icon: "🏆" }
+  { k: "v1", lbl: "Palabras 1", icon: "chat" },
+  { k: "v2", lbl: "Palabras 2", icon: "mic" },
+  { k: "g1", lbl: "Gramática", icon: "bulb" },
+  { k: "g2", lbl: "Frases", icon: "pencil" },
+  { k: "r",  lbl: "Lectura", icon: "book" },
+  { k: "x",  lbl: "Examen", icon: "trophy" }
 ];
+const ZIGZAG = [0, 52, 78, 52, 0, -52];
 const TERMS = { 1: "1er trimestre", 2: "2º trimestre", 3: "3er trimestre" };
-const PRAISE = ["¡Genial!", "¡Muy bien!", "¡Perfecto!", "¡Crack!", "¡Eso es!", "¡Fantástico!", "¡Bravo!"];
+const PRAISE = ["¡Genial!", "¡Muy bien!", "¡Perfecto!", "¡Crack!", "¡Eso es!", "¡Fantástico!", "¡Bravo!", "¡Así se hace!"];
 const FOX_TIPS = [
-  "15 minutos al día valen más que 2 horas el domingo. 💪",
+  "15 minutos al día valen más que 2 horas el domingo.",
   "Si fallas, no pasa nada: la pregunta vuelve al final para que la aprendas.",
-  "Antes de un examen, repasa la Chuleta de la unidad. 📋",
+  "Antes de un examen, repasa la chuleta de la unidad.",
   "Escucha cada palabra y repítela en voz alta. ¡Así se aprende!",
   "Los verbos irregulares se aprenden repitiendo: went, ate, saw...",
-  "¿Sabías que en inglés los días y los meses van con MAYÚSCULA?",
+  "En inglés los días y los meses van siempre con MAYÚSCULA.",
   "Haz el examen de la unidad: si sacas más de un 5, ¡lo tienes!"
 ];
 const BADGES = [
@@ -35,6 +36,7 @@ const BADGES = [
   { id: "xp2000", b: "🌟", t: "2000 XP" },
   { id: "fix20", b: "🩹", t: "20 errores corregidos" }
 ];
+const NOSCORE = ["intro", "theory", "readtext"];
 
 // ------------------------------------------------------------------ estado
 const defaultState = () => ({
@@ -76,6 +78,8 @@ function stepDone(uid, k) {
   if (k === "x") { const b = bestExam(uid); return b !== null && b >= 5; }
   return !!S.lessons[uid + "-" + k];
 }
+// Texto en inglés escapado para meterlo en un onclick="say('...')"
+const jsq = (s) => esc(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 
 // Normaliza respuestas: minúsculas, sin signos, contracciones expandidas
 function norm(s) {
@@ -94,47 +98,96 @@ function lev(a, b) {
   return m[a.length][b.length];
 }
 
-// ------------------------------------------------------------------ voz y sonidos
-let voice = null;
-function pickVoice() {
-  const vs = speechSynthesis.getVoices();
-  voice = vs.find((v) => v.lang === "en-GB" && /female|serena|kate|martha|google uk english female/i.test(v.name))
-    || vs.find((v) => v.lang === "en-GB") || vs.find((v) => /^en/.test(v.lang)) || null;
+// ------------------------------------------------------------------ avisos y confeti
+function toast(html, ms = 4500) {
+  document.querySelectorAll(".toast").forEach((t) => t.remove());
+  const t = document.createElement("div"); t.className = "toast"; t.innerHTML = html;
+  t.onclick = () => t.remove(); document.body.appendChild(t);
+  setTimeout(() => { t.classList.add("out"); setTimeout(() => t.remove(), 350); }, ms);
 }
-if ("speechSynthesis" in window) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
-function say(text, slow) {
-  if (!("speechSynthesis" in window)) return;
-  speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(text.replace(/___/g, "blank"));
-  u.lang = "en-GB"; if (voice) u.voice = voice;
-  u.rate = slow ? 0.6 : S.rate;
-  speechSynthesis.speak(u);
+function confetti(n = 40) {
+  const cols = ["#58cc02", "#1cb0f6", "#ffc800", "#ff4b4b", "#a560f0", "#ff9600"];
+  for (let i = 0; i < n; i++) {
+    const c = document.createElement("div"); c.className = "confetti";
+    c.style.background = pick(cols); c.style.left = Math.random() * 100 + "vw";
+    c.style.animationDuration = 1.6 + Math.random() * 1.8 + "s"; c.style.animationDelay = Math.random() * 0.4 + "s";
+    c.style.width = 6 + Math.random() * 7 + "px";
+    document.body.appendChild(c); setTimeout(() => c.remove(), 4200);
+  }
+}
+
+// ------------------------------------------------------------------ voz
+// iPad/iPhone y algunos Chrome fallan si se llama a cancel() y speak() seguidos,
+// o si la primera vez no viene de un toque. Por eso: se "desbloquea" la voz en el
+// primer toque, solo se cancela si ya está hablando, y se reintenta si no arranca.
+const SYN = window.speechSynthesis;
+let voice = null, speechReady = false, lastUtter = null, speakWatch = null;
+const GOOD_VOICES = /(Daniel|Kate|Serena|Arthur|Martha|Oliver|Stephanie|Google UK English|Microsoft (Libby|Sonia|Ryan|George|Hazel|Susan))/i;
+function pickVoice() {
+  if (!SYN) return;
+  const vs = SYN.getVoices(); if (!vs.length) return;
+  const gb = vs.filter((v) => /^en[-_]GB/i.test(v.lang)), en = vs.filter((v) => /^en/i.test(v.lang));
+  voice = gb.find((v) => GOOD_VOICES.test(v.name) && v.localService) || gb.find((v) => GOOD_VOICES.test(v.name))
+    || gb.find((v) => v.localService) || gb[0]
+    || en.find((v) => /(Samantha|Alex|Google US English|Microsoft (Aria|Jenny|Guy))/i.test(v.name)) || en[0] || null;
+}
+if (SYN) { pickVoice(); SYN.onvoiceschanged = pickVoice; }
+function unlockAudio() {
+  try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); if (actx.state === "suspended") actx.resume(); } catch (e) {}
+  if (!SYN || speechReady) return;
+  speechReady = true;
+  try { const u = new SpeechSynthesisUtterance(" "); u.volume = 0; SYN.speak(u); } catch (e) {}
+}
+document.addEventListener("pointerdown", unlockAudio, { capture: true });
+document.addEventListener("keydown", unlockAudio, { capture: true });
+
+function say(text, slow, fromTap) {
+  if (!SYN || !window.SpeechSynthesisUtterance) { if (fromTap) voiceHelp(true); return; }
+  if (!voice) pickVoice();
+  const clean = String(text).replace(/___/g, "blank");
+  const run = (retry) => {
+    const u = new SpeechSynthesisUtterance(clean);
+    u.lang = voice ? voice.lang : "en-GB"; if (voice) u.voice = voice;
+    u.rate = slow ? 0.6 : S.rate; u.pitch = 1;
+    let started = false;
+    u.onstart = () => { started = true; setTalking(true); };
+    u.onend = u.onerror = () => setTalking(false);
+    lastUtter = u; // evita que el navegador lo borre de memoria a medias
+    try { SYN.resume(); SYN.speak(u); } catch (e) {}
+    clearTimeout(speakWatch);
+    speakWatch = setTimeout(() => {
+      if (started || SYN.speaking) return;
+      if (!retry) { try { SYN.cancel(); } catch (e) {} setTimeout(() => run(true), 120); }
+      else if (fromTap) voiceHelp(false);
+    }, 1200);
+  };
+  if (SYN.speaking || SYN.pending) { try { SYN.cancel(); } catch (e) {} setTimeout(() => run(false), 120); }
+  else run(false);
+}
+function setTalking(on) { document.querySelectorAll(".speak").forEach((b) => b.classList.toggle("talking", on)); }
+function voiceHelp(unsupported) {
+  toast(`${icon("alert", 22)}<div>${unsupported ? "Este navegador no tiene voz. Abre la app en <b>Safari</b> (iPad/iPhone) o <b>Chrome</b>." :
+    "No se oye nada. Sube el volumen, quita el <b>modo silencio</b> y, si abriste el enlace desde WhatsApp, ábrelo en <b>Safari</b> o <b>Chrome</b>."}</div>`, 7000);
 }
 let actx = null;
 function beep(kind) {
   if (!S.sound) return;
   try {
     actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    if (actx.state === "suspended") actx.resume();
     const notes = { ok: [[660, 0], [880, .09]], bad: [[220, 0], [180, .12]], win: [[523, 0], [659, .12], [784, .24], [1046, .36]], tap: [[500, 0]] }[kind];
     notes.forEach(([f, t]) => {
       const o = actx.createOscillator(), g = actx.createGain();
       o.type = kind === "bad" ? "square" : "sine"; o.frequency.value = f;
       g.gain.setValueAtTime(0.0001, actx.currentTime + t);
-      g.gain.exponentialRampToValueAtTime(kind === "tap" ? 0.05 : 0.18, actx.currentTime + t + 0.02);
+      g.gain.exponentialRampToValueAtTime(kind === "tap" ? 0.04 : kind === "bad" ? 0.08 : 0.16, actx.currentTime + t + 0.02);
       g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime + t + (kind === "tap" ? 0.06 : 0.22));
       o.connect(g).connect(actx.destination); o.start(actx.currentTime + t); o.stop(actx.currentTime + t + 0.3);
     });
   } catch (e) {}
 }
-function confetti(n = 40) {
-  const em = ["🎉", "⭐", "✨", "🟩", "🟨", "🟦", "🦊"];
-  for (let i = 0; i < n; i++) {
-    const c = document.createElement("div"); c.className = "confetti"; c.textContent = pick(em);
-    c.style.left = Math.random() * 100 + "vw"; c.style.animationDuration = 1.5 + Math.random() * 2 + "s";
-    c.style.animationDelay = Math.random() * 0.5 + "s"; document.body.appendChild(c);
-    setTimeout(() => c.remove(), 4500);
-  }
-}
+const speakBtn = (expr, cls = "", size = 28) => `<button class="speak ${cls}" onclick="say(${expr},false,true)" aria-label="Escuchar">${icon("speaker", size)}</button>`;
+const slowBtn = (expr) => `<div class="slow"><button class="link" onclick="say(${expr},true,true)">🐢 Más despacio</button></div>`;
 
 // ------------------------------------------------------------------ tiempo de estudio
 let studying = false, lastAct = Date.now(), goalJustMet = false;
@@ -147,6 +200,7 @@ setInterval(() => {
 }, 1000);
 
 // ------------------------------------------------------------------ logros
+let newBadges = [];
 function checkBadges() {
   const give = (id) => { if (!S.badges[id]) { S.badges[id] = dayKey(); newBadges.push(id); } };
   const st = streak();
@@ -158,7 +212,6 @@ function checkBadges() {
   if (S.xp >= 500) give("xp500"); if (S.xp >= 2000) give("xp2000");
   if (S.fixed >= 20) give("fix20");
 }
-let newBadges = [];
 
 // ------------------------------------------------------------------ generador de preguntas
 function vocabQ(u, i, forceType) {
@@ -232,16 +285,11 @@ function recommend() {
   let s = firstOpen(UNITS[cu]); if (s) return { u: UNITS[cu].id, k: s.k };
   for (let i = 0; i < cu; i++) { s = firstOpen(UNITS[i]); if (s) return { u: UNITS[i].id, k: s.k }; }
   if (errorCount() > 0 && S.lastType !== "review") return { review: true };
-  // Todo hecho: repasar el paso con menos estrellas de la unidad actual o la siguiente
+  // Todo hecho: la siguiente unidad, o repasar el paso con menos estrellas
   const u = UNITS[Math.min(cu + 1, UNITS.length - 1)];
   s = firstOpen(u); if (s) return { u: u.id, k: s.k };
   const weakest = STEPS.filter((x) => x.k !== "x").sort((a, b) => ((S.lessons[UNITS[cu].id + "-" + a.k] || {}).stars || 0) - ((S.lessons[UNITS[cu].id + "-" + b.k] || {}).stars || 0))[0];
   return { u: UNITS[cu].id, k: weakest.k };
-}
-function recLabel(r) {
-  if (r.review) return "Repaso de tus errores 🩹";
-  const u = unitById(r.u), s = STEPS.find((x) => x.k === r.k);
-  return u.emoji + " " + u.title + " · " + s.lbl;
 }
 
 // ------------------------------------------------------------------ pantallas principales
@@ -254,134 +302,148 @@ function render() {
   if (tab === "parents") return renderParents();
 }
 function topbar() {
-  const secs = todaySecs(), goal = S.goalMin * 60, pct = Math.min(1, secs / goal), st = streak();
-  const C = 2 * Math.PI * 17;
-  return `<div class="topbar">
-    <div class="stat fire ${S.met[dayKey()] ? "" : "off"}" title="Racha">🔥 ${st}</div>
-    <div class="stat xp" title="Puntos">⭐ ${S.xp}</div>
-    <div class="ring" title="Minutos de hoy">
-      <svg width="42" height="42"><circle cx="21" cy="21" r="17" fill="none" stroke="var(--line)" stroke-width="5"/>
-      <circle cx="21" cy="21" r="17" fill="none" stroke="${pct >= 1 ? "var(--green)" : "var(--orange)"}" stroke-width="5" stroke-linecap="round"
-      stroke-dasharray="${C}" stroke-dashoffset="${C * (1 - pct)}"/></svg>
-      <span>${Math.floor(secs / 60)}'</span></div>
-  </div>`;
+  const st = streak();
+  return `<div class="topbar"><div class="brand">${fox("happy", 34)}English Fox</div>
+    <div class="pill fire ${S.met[dayKey()] ? "" : "off"}" title="Días seguidos">${icon("flame", 20)}${st}</div>
+    <div class="pill xp" title="Puntos">${icon("star", 20)}${S.xp}</div></div>`;
 }
 function nav() {
-  const b = (t, i, l) => `<button class="${tab === t ? "on" : ""}" onclick="go('${t}')"><span class="i">${i}</span>${l}</button>`;
-  return `<nav class="nav"><div class="nav-inner">${b("home", "🏠", "Aprender")}${b("notes", "📋", "Chuletas")}${b("grades", "🏆", "Notas")}${b("parents", "👨‍👩‍👦", "Padres")}</div></nav>`;
+  const b = (t, i, l) => `<button class="${tab === t ? "on" : ""}" onclick="go('${t}')">${icon(i, 25)}${l}</button>`;
+  return `<nav class="nav"><div class="nav-inner">${b("home", "home", "Aprender")}${b("notes", "book", "Chuletas")}${b("grades", "trophy", "Notas")}${b("parents", "users", "Padres")}</div></nav>`;
 }
 
 function renderHome() {
-  const r = recommend(), secs = todaySecs(), left = Math.max(0, Math.ceil((S.goalMin * 60 - secs) / 60));
+  const r = recommend(), secs = todaySecs(), goal = S.goalMin * 60;
+  const mins = Math.floor(secs / 60), left = Math.max(0, Math.ceil((goal - secs) / 60)), pct = Math.min(100, (secs / goal) * 100);
   const cu = S.classUnit;
-  let msg = left > 0
-    ? (secs < 30 ? `¡Hola, ${esc(S.name)}! Hoy toca inglés: ${S.goalMin} minutos y listo.` : `¡Vas genial! Te quedan ${left} min para la meta de hoy.`)
-    : `¡Meta de hoy conseguida! 🎉 Si quieres, sigue un poco más.`;
+  const msg = left <= 0 ? `¡Meta de hoy conseguida, ${esc(S.name)}! 🎉 Si quieres, sigue un poco más.`
+    : secs < 30 ? `¡Hola, ${esc(S.name)}! Hoy toca inglés: ${S.goalMin} minutos y listo.`
+    : `¡Vas genial! Te quedan ${left} min para la meta de hoy.`;
+  let nextLbl, nextSub, nextColor, nextIcon;
+  if (r.review) { nextLbl = "Repasa tus errores"; nextSub = "Repaso"; nextColor = "var(--red)"; nextIcon = "bandage"; }
+  else { const u = unitById(r.u), s = STEPS.find((x) => x.k === r.k); nextLbl = s.lbl + " · " + u.title; nextSub = u.emoji + " Siguiente"; nextColor = u.color; nextIcon = s.icon; }
+
   let h = topbar() + `<div class="content">
-    <div class="today">
-      <div class="mascot"><div class="fox">🦊</div><div class="bubble">${msg}</div></div>
-      <h2>${left > 0 ? "Sesión de hoy" : "Extra"}</h2>
-      <p>Siguiente: <b>${esc(recLabel(r))}</b></p>
+    <div class="hero">
+      <div class="hero-top">${fox(left <= 0 ? "cheer" : "happy", 76)}<div class="bubble">${msg}</div></div>
+      <div class="goal"><div class="goal-row"><span>META DE HOY</span><b>${mins} / ${S.goalMin} min</b></div>
+        <div class="track"><div class="${pct >= 100 ? "full" : ""}" style="width:${pct}%"></div></div></div>
+      <div class="next-up"><div class="dot" style="background:${nextColor}">${icon(nextIcon, 20)}</div><div><small>${esc(nextSub)}</small>${esc(nextLbl)}</div></div>
       <button class="btn" onclick="startRec()">${secs < 30 ? "¡Empezar!" : "Continuar"}</button>
     </div>`;
   const ec = errorCount();
-  if (ec) h += `<div class="review-card" onclick="startReview()"><div class="big">🩹</div><div><b>Repasa tus errores</b><span class="muted">${ec} cosa${ec > 1 ? "s" : ""} por reforzar</span></div></div>`;
+  if (ec && !r.review) h += `<button class="review-card" onclick="startReview()"><div class="ico">${icon("bandage", 24)}</div><div><b>Repasa tus errores</b><span class="muted">${ec} cosa${ec > 1 ? "s" : ""} por reforzar</span></div>${icon("chevron", 22).replace('class="ic"', 'class="ic chev"')}</button>`;
   let lastTerm = 0;
-  UNITS.forEach((u) => {
-    if (u.term !== lastTerm) { h += `<div class="term-title">${TERMS[u.term]}</div>`; lastTerm = u.term; }
+  UNITS.forEach((u, ui) => {
+    if (u.term !== lastTerm) { h += `<div class="term">${TERMS[u.term]}</div>`; lastTerm = u.term; }
     const next = STEPS.find((s) => !stepDone(u.id, s.k));
-    h += `<div class="unit"><div class="unit-head" style="background:${u.color}"><div class="em">${u.emoji}</div>
-      <div><h3>${esc(u.title)}</h3><small>${esc(u.sub)}</small></div>${u.id === cu ? '<div class="pin">📍 En clase</div>' : ""}</div><div class="steps">`;
-    STEPS.forEach((s) => {
+    const isNow = !r.review && r.u === u.id;
+    h += `<div class="unit-banner" style="background:${u.color}"><div class="em">${u.emoji}</div>
+      <div class="t"><small>${ui === 0 ? "Antes de empezar" : "Unidad " + ui}</small><h3>${esc(u.title)}</h3><div class="sub">${esc(u.sub)}</div>
+      ${u.id === cu ? `<span class="chip-now">📍 En clase ahora</span>` : ""}</div>
+      <button class="notes-btn" onclick="renderNotes('${u.id}')" aria-label="Chuleta">${icon("book", 22)}</button></div>
+      <div class="path" style="--c:${u.color}">`;
+    STEPS.forEach((s, si) => {
       const L = S.lessons[u.id + "-" + s.k], done = stepDone(u.id, s.k), be = bestExam(u.id);
-      const stars = s.k === "x" ? "" : L ? "⭐".repeat(L.stars) + "☆".repeat(3 - L.stars) : "";
+      const current = isNow && r.k === s.k;
+      const state = done ? "done" : current || (next && next.k === s.k) ? "" : "todo";
+      const stars = s.k !== "x" && L ? `<div class="stars">${[1, 2, 3].map((n) => icon("star", 16).replace('class="ic"', `class="ic ${n > L.stars ? "off" : ""}"`)).join("")}</div>` : "";
       const grade = s.k === "x" && be !== null ? `<span class="grade ${be < 5 ? "fail" : ""}">${fmtGrade(be)}</span>` : "";
-      h += `<div class="step ${done ? "done" : ""} ${next && next.k === s.k && u.id === cu ? "next" : ""}" onclick="startLesson('${u.id}','${s.k}')">
-        <div class="circle">${s.icon}${grade}</div><div class="lbl">${s.lbl}</div><div class="stars">${stars}</div></div>`;
+      h += `<div class="node ${state} ${s.k === "x" ? "exam" : ""}" style="transform:translateX(${ZIGZAG[si]}px)" onclick="startLesson('${u.id}','${s.k}')">
+        ${current ? `<div class="start-tip">${secs < 30 ? "¡Empieza!" : "¡Sigue!"}</div><div class="ring-now"></div>` : ""}
+        <div class="disc">${icon(done && s.k !== "x" ? "check" : s.icon, s.k === "x" ? 38 : 32, done ? 3 : 2.4)}</div>${grade}
+        <div class="lbl">${s.lbl}</div>${stars}</div>`;
     });
-    h += `</div></div>`;
+    h += `</div>`;
   });
-  h += `<div class="card muted" style="text-align:center">🦊 ${pick(FOX_TIPS)}</div></div>` + nav();
+  h += `<div class="tip-card">${fox("think", 48)}<div>${pick(FOX_TIPS)}</div></div></div>` + nav();
   app().innerHTML = h;
 }
 
+function pageTitle(ic, color, title, sub) {
+  return `<div class="page-title"><div class="ico" style="background:${color}">${icon(ic, 26)}</div><div><h2>${title}</h2><p>${sub}</p></div></div>`;
+}
+function grammarCards(u) {
+  return u.grammar.map((g) => `<div class="theory"><h3>${icon("bulb", 20)}${esc(g.title)}</h3>${g.html}</div>`).join("");
+}
+
 function renderNotes(uid) {
+  tab = "notes";
   let h = topbar() + `<div class="content">`;
   if (!uid) {
-    h += `<h2>📋 Chuletas</h2><p class="muted">Todo lo que entra en el examen, unidad por unidad. Ideal para repasar el día antes.</p>`;
-    UNITS.forEach((u) => { h += `<button class="list-btn" onclick="renderNotes('${u.id}')"><span class="em">${u.emoji}</span><span>${esc(u.title)}<br><small class="muted">${esc(u.sub)}</small></span><span class="r">›</span></button>`; });
+    h += pageTitle("book", "var(--purple)", "Chuletas", "Todo lo que entra en el examen, unidad por unidad.");
+    UNITS.forEach((u, ui) => { h += `<button class="list-btn" onclick="renderNotes('${u.id}')"><span class="em" style="background:${u.color}22">${u.emoji}</span><span>${esc(u.title)}<small>${ui === 0 ? "Repaso" : "Unidad " + ui} · ${esc(u.sub)}</small></span><span class="r">${icon("chevron", 22)}</span></button>`; });
   } else {
     const u = unitById(uid);
-    h += `<button class="back" onclick="renderNotes()">‹ Todas las chuletas</button><h2>${u.emoji} ${esc(u.title)}</h2>`;
-    u.grammar.forEach((g) => { h += `<div class="theory"><h3>${esc(g.title)}</h3>${g.html}</div>`; });
-    h += `<div class="card"><h3>📖 Vocabulario</h3>`;
+    h += `<button class="link" onclick="renderNotes()">${icon("back", 18)} Todas las chuletas</button>
+      <div class="unit-banner" style="background:${u.color};margin:10px 0 16px"><div class="em">${u.emoji}</div><div class="t"><small>Chuleta</small><h3>${esc(u.title)}</h3><div class="sub">${esc(u.sub)}</div></div></div>`;
+    h += grammarCards(u);
+    h += `<div class="card"><h3>${icon("chat", 20)}Vocabulario</h3>`;
     u.vocab.forEach((w, i) => {
-      h += `<div class="vocab-row"><div class="e">${w[2]}</div><div class="w"><b>${esc(w[0])}</b><span class="muted">${esc(w[1])}${w[3] ? " · (" + esc(w[3]) + ")" : ""}</span></div>
-        <button class="speak mini" onclick="say(unitById('${uid}').vocab[${i}][0])">🔊</button></div>`;
+      h += `<div class="vocab-row"><div class="e">${w[2]}</div><div class="w"><b>${esc(w[0])}</b><span class="muted">${esc(w[1])}${w[3] ? " · de " + esc(w[3]) : ""}</span></div>
+        ${speakBtn(`unitById('${uid}').vocab[${i}][0]`, "mini", 18)}</div>`;
     });
-    h += `</div><button class="btn" onclick="startLesson('${uid}','x')">🏆 Hacer examen de prueba</button></div>`;
+    h += `</div><button class="btn" onclick="startLesson('${uid}','x')">${icon("trophy", 22)} Hacer examen de prueba</button>`;
   }
   h += `</div>` + nav();
-  tab = "notes"; app().innerHTML = h; window.scrollTo(0, 0);
+  app().innerHTML = h; window.scrollTo(0, 0);
 }
 
 function renderGrades() {
-  let h = topbar() + `<div class="content"><h2>🏆 Mis notas</h2><p class="muted">Examen de prueba de cada unidad. A partir de 5 ¡aprobado!</p>`;
-  UNITS.forEach((u) => {
+  let h = topbar() + `<div class="content">` + pageTitle("trophy", "var(--yellow-d)", "Mis notas", "Examen de prueba de cada unidad. ¡A partir de 5, aprobado!");
+  UNITS.forEach((u, ui) => {
     const ex = S.exams[u.id] || [], be = bestExam(u.id);
-    h += `<button class="list-btn" onclick="startLesson('${u.id}','x')"><span class="em">${u.emoji}</span><span>${esc(u.title)}<br>
-      <small class="muted">${ex.length ? ex.length + " intento" + (ex.length > 1 ? "s" : "") + " · último " + fmtGrade(ex[ex.length - 1].score) : "Sin hacer"}</small></span>
-      <span class="r" style="color:${be === null ? "var(--muted)" : be >= 5 ? "var(--green)" : "var(--red)"}">${be === null ? "—" : fmtGrade(be)}</span></button>`;
+    h += `<button class="list-btn" onclick="startLesson('${u.id}','x')"><span class="em" style="background:${u.color}22">${u.emoji}</span><span>${esc(u.title)}
+      <small>${ex.length ? ex.length + " intento" + (ex.length > 1 ? "s" : "") + " · último " + fmtGrade(ex[ex.length - 1].score) : "Sin hacer todavía"}</small></span>
+      <span class="r" style="color:${be === null ? "var(--faint)" : be >= 5 ? "var(--green)" : "var(--red)"}">${be === null ? "—" : fmtGrade(be)}</span></button>`;
   });
-  h += `<h2 style="margin-top:24px">🎖️ Logros</h2><div class="badges">`;
+  h += `<h3 style="margin:26px 0 12px">🎖️ Logros</h3><div class="badges">`;
   BADGES.forEach((b) => { h += `<div class="badge ${S.badges[b.id] ? "" : "locked"}"><div class="b">${b.b}</div><small>${b.t}</small></div>`; });
   h += `</div></div>` + nav();
   app().innerHTML = h;
 }
 
 function renderParents() {
-  let h = topbar() + `<div class="content"><h2>👨‍👩‍👦 Zona de padres</h2>`;
-  // Últimos 14 días
+  let h = topbar() + `<div class="content">` + pageTitle("users", "var(--blue)", "Zona de padres", "Progreso, ajustes y pasar el progreso a otro dispositivo.");
   const days = [...Array(14).keys()].reverse().map((i) => addDays(new Date(), -i));
   const max = Math.max(S.goalMin * 60, ...days.map((d) => S.days[dayKey(d)] || 0));
-  const total = days.reduce((a, d) => a + (S.days[dayKey(d)] || 0), 0);
-  h += `<div class="card"><h3>⏱️ Últimos 14 días</h3><span class="muted">${Math.round(total / 60)} min en total · ${days.filter((d) => S.met[dayKey(d)]).length} días con la meta cumplida</span>
-    <div class="days">${days.map((d) => { const s = S.days[dayKey(d)] || 0; return `<div class="${S.met[dayKey(d)] ? "goal" : ""}" style="height:${(s / max) * 100}%" title="${Math.round(s / 60)} min"></div>`; }).join("")}</div>
+  const total = days.reduce((a, d) => a + (S.days[dayKey(d)] || 0), 0), tk = dayKey();
+  h += `<div class="card"><h3>${icon("chart", 20)}Últimos 14 días</h3><span class="muted">${Math.round(total / 60)} min en total · ${days.filter((d) => S.met[dayKey(d)]).length} días con la meta cumplida</span>
+    <div class="days">${days.map((d) => { const k = dayKey(d), s = S.days[k] || 0; return `<div class="${S.met[k] ? "goal" : ""} ${k === tk ? "today" : ""}" style="height:${(s / max) * 100}%" title="${Math.round(s / 60)} min"></div>`; }).join("")}</div>
     <div class="days-lbl">${days.map((d) => `<span>${"DLMXJVS"[d.getDay()]}</span>`).join("")}</div></div>`;
-  // Ajustes
-  h += `<div class="card"><h3>⚙️ Ajustes</h3>
-    <label class="muted">Nombre</label><input class="field" id="p-name" value="${esc(S.name)}" onchange="S.name=this.value;save()">
-    <label class="muted">Unidad que están dando AHORA en clase</label>
-    <select id="p-unit" onchange="S.classUnit=this.value;save()">${UNITS.map((u) => `<option value="${u.id}" ${u.id === S.classUnit ? "selected" : ""}>${u.emoji} ${esc(u.title)}</option>`).join("")}</select>
-    <label class="muted">Meta diaria</label>
+  h += `<div class="card"><h3>${icon("settings", 20)}Ajustes</h3>
+    <label class="lbl">Nombre</label><input class="field" value="${esc(S.name)}" onchange="S.name=this.value;save()">
+    <label class="lbl">Unidad que están dando AHORA en clase</label>
+    <select onchange="S.classUnit=this.value;save()">${UNITS.map((u) => `<option value="${u.id}" ${u.id === S.classUnit ? "selected" : ""}>${u.emoji} ${esc(u.title)}</option>`).join("")}</select>
+    <label class="lbl">Meta diaria</label>
     <select onchange="S.goalMin=+this.value;save()">${[10, 15, 20, 30].map((m) => `<option value="${m}" ${m === S.goalMin ? "selected" : ""}>${m} minutos</option>`).join("")}</select>
-    <label class="muted">Velocidad de la voz</label>
-    <select onchange="S.rate=+this.value;save();say('Hello! How are you today?')">${[[0.7, "Lenta"], [0.85, "Normal"], [1, "Rápida"]].map(([v, l]) => `<option value="${v}" ${v === S.rate ? "selected" : ""}>${l}</option>`).join("")}</select>
-    <label style="display:flex;gap:8px;align-items:center;font-weight:700"><input type="checkbox" ${S.sound ? "checked" : ""} onchange="S.sound=this.checked;save()"> Sonidos</label></div>`;
-  // Resumen por unidad
-  h += `<div class="card"><h3>📊 Progreso por unidad</h3>`;
+    <label class="lbl">Velocidad de la voz</label>
+    <select onchange="S.rate=+this.value;save();say('Hello! How are you today?',false,true)">${[[0.7, "Lenta"], [0.85, "Normal"], [1, "Rápida"]].map(([v, l]) => `<option value="${v}" ${v === S.rate ? "selected" : ""}>${l}</option>`).join("")}</select>
+    <label class="switch">Sonidos de acierto y fallo <input type="checkbox" ${S.sound ? "checked" : ""} onchange="S.sound=this.checked;save()"></label>
+    <button class="btn blue small" style="margin-top:10px" onclick="testVoice()">${icon("speaker", 20)} Probar el sonido</button>
+    <p class="muted" style="font-size:13px;margin:10px 0 0">Voz: ${voice ? esc(voice.name) + " (" + esc(voice.lang) + ")" : SYN ? "cargando…" : "este navegador no tiene voz"}</p></div>`;
+  h += `<div class="card"><h3>${icon("target", 20)}Progreso por unidad</h3>`;
   UNITS.forEach((u) => {
     const d = STEPS.filter((s) => stepDone(u.id, s.k)).length, be = bestExam(u.id);
-    h += `<div class="vocab-row"><div class="e">${u.emoji}</div><div class="w"><b>${esc(u.title)}</b><span class="muted">${d}/6 pasos</span></div>
-      <span class="pill" style="color:${be === null ? "var(--muted)" : be >= 5 ? "var(--green-d)" : "var(--red)"}">${be === null ? "sin examen" : "Nota " + fmtGrade(be)}</span></div>`;
+    h += `<div class="vocab-row"><div class="e">${u.emoji}</div><div class="w"><b>${esc(u.title)}</b><span class="muted">${d} de 6 pasos</span></div>
+      <span class="tag-grade ${be === null ? "" : be >= 5 ? "pass" : "fail"}">${be === null ? "sin examen" : "Nota " + fmtGrade(be)}</span></div>`;
   });
   h += `</div>`;
-  // Errores
   const errs = Object.entries(S.errors).sort((a, b) => b[1] - a[1]).slice(0, 10);
-  h += `<div class="card"><h3>🩹 Lo que más le cuesta</h3>`;
+  h += `<div class="card"><h3>${icon("bandage", 20)}Lo que más le cuesta</h3>`;
   if (!errs.length) h += `<p class="muted">Nada pendiente. ¡Bien!</p>`;
   errs.forEach(([k, n]) => { h += `<div class="mistake">${describeKey(k)} <span class="muted">(${n}×)</span></div>`; });
   h += `</div>`;
-  // Sincronizar
-  h += `<div class="card"><h3>🔄 Pasar el progreso a otro dispositivo</h3>
-    <p class="muted">El progreso se guarda en cada tablet/ordenador. Para llevarlo a casa de la abuela: pulsa <b>Copiar código</b>, envíalo por WhatsApp y en el otro dispositivo pégalo abajo y pulsa <b>Juntar progreso</b>. Se suma lo de los dos sitios, no se pierde nada.</p>
-    <button class="btn blue small" onclick="exportCode()">📋 Copiar código de progreso</button>
+  h += `<div class="card"><h3>${icon("refresh", 20)}Pasar el progreso a otro dispositivo</h3>
+    <p class="muted" style="font-size:15px">El progreso se guarda en cada tablet u ordenador. Para llevarlo a casa de la abuela: pulsa <b>Copiar código</b>, envíalo por WhatsApp, y en el otro dispositivo pégalo abajo y pulsa <b>Juntar progreso</b>. Se suma lo de los dos sitios.</p>
+    <button class="btn blue small" onclick="exportCode()">${icon("copy", 20)} Copiar código de progreso</button>
     <textarea class="field" id="imp" placeholder="Pega aquí el código del otro dispositivo" style="margin-top:14px"></textarea>
-    <button class="btn small" onclick="importCode()">⬇️ Juntar progreso</button></div>
-    <button class="btn white small" onclick="resetAll()">Borrar todo el progreso</button>
-    <p class="muted" style="text-align:center;font-size:13px;margin-top:20px">English Fox 🦊 · Inglés 5º Primaria</p></div>` + nav();
+    <button class="btn small" onclick="importCode()">${icon("download", 20)} Juntar progreso</button></div>
+    <button class="btn danger small" onclick="resetAll()">Borrar todo el progreso</button>
+    <p class="muted" style="text-align:center;font-size:13px;margin-top:22px">English Fox 🦊 · Inglés 5º de Primaria</p></div>` + nav();
   app().innerHTML = h;
 }
+function testVoice() { pickVoice(); say("Hello " + (S.name || "") + "! Let's learn English.", false, true); setTimeout(() => { if (tab === "parents") renderParents(); }, 1500); }
 function describeKey(k) {
   const [kind, uid, i] = k.split("|"), u = unitById(uid); if (!u) return k;
   if (kind === "v" && u.vocab[i]) return `${u.vocab[i][2]} <b>${esc(u.vocab[i][0])}</b> = ${esc(u.vocab[i][1])}`;
@@ -395,12 +457,12 @@ function encode(o) { return btoa(unescape(encodeURIComponent(JSON.stringify(o)))
 function decode(s) { return JSON.parse(decodeURIComponent(escape(atob(s.trim())))); }
 function exportCode() {
   const code = "FOX1:" + encode(S);
-  const done = () => alert("✅ Código copiado. Pégalo en WhatsApp o en un email y ábrelo en el otro dispositivo.");
-  if (navigator.clipboard) navigator.clipboard.writeText(code).then(done, () => { $("#imp").value = code; $("#imp").select(); alert("Selecciona y copia el código del cuadro."); });
-  else { $("#imp").value = code; $("#imp").select(); }
+  const fallback = () => { $("#imp").value = code; $("#imp").select(); toast(`${icon("copy", 22)}<div>Selecciona y copia el código del cuadro.</div>`); };
+  if (navigator.clipboard) navigator.clipboard.writeText(code).then(() => toast(`${icon("check", 22)}<div>Código copiado. Pégalo en WhatsApp y ábrelo en el otro dispositivo.</div>`), fallback);
+  else fallback();
 }
 function importCode() {
-  let o; try { o = decode($("#imp").value.replace(/^FOX1:/, "")); } catch (e) { return alert("Ese código no es válido 🤔"); }
+  let o; try { o = decode($("#imp").value.replace(/^FOX1:/, "")); } catch (e) { return toast(`${icon("alert", 22)}<div>Ese código no es válido 🤔</div>`); }
   const m = (a, b, f) => { const r = Object.assign({}, a); Object.keys(b || {}).forEach((k) => { r[k] = k in r ? f(r[k], b[k]) : b[k]; }); return r; };
   S.xp = Math.max(S.xp, o.xp || 0);
   S.days = m(S.days, o.days, Math.max);
@@ -410,7 +472,7 @@ function importCode() {
   S.errors = m(S.errors, o.errors, Math.max);
   S.badges = m(S.badges, o.badges, (a) => a);
   S.fixed = Math.max(S.fixed, o.fixed || 0);
-  save(); alert("✅ ¡Progreso juntado!"); render();
+  save(); render(); toast(`${icon("check", 22)}<div>¡Progreso juntado!</div>`);
 }
 function resetAll() {
   if (confirm("¿Seguro que quieres borrar TODO el progreso de este dispositivo?") && confirm("De verdad, ¿borrar todo?")) { S = defaultState(); save(); render(); }
@@ -422,102 +484,92 @@ function startRec() { const r = recommend(); r.review ? startReview() : startLes
 function startReview() {
   const qs = buildReview();
   if (!qs.length) return startRec();
-  openLesson({ qs, review: true, title: "Repaso" });
+  openLesson({ qs, review: true });
 }
-function startLesson(uid, k) {
-  openLesson({ qs: buildLesson(uid, k), uid, k, exam: k === "x" });
-}
+function startLesson(uid, k) { openLesson({ qs: buildLesson(uid, k), uid, k, exam: k === "x" }); }
 function openLesson(o) {
   L = Object.assign({ i: 0, wrong: 0, right: 0, combo: 0, requeued: new Set(), log: [], start: Date.now() }, o);
-  L.total = L.qs.filter((q) => !["intro", "theory", "readtext"].includes(q.type)).length;
   studying = true; lastAct = Date.now(); goalJustMet = false;
   showQ();
 }
 function quitLesson() {
-  if (L.i > 0 && !confirm("¿Salir de la lección? Perderás el progreso de esta lección.")) return;
-  window.speechSynthesis && speechSynthesis.cancel(); L = null; save(); go("home");
+  if (L.i > 0 && !confirm("¿Salir de la lección? Perderás lo que llevas de esta lección.")) return;
+  if (SYN) SYN.cancel(); L = null; save(); go("home");
 }
 
-let cur = null; // pregunta actual {q, ready, check()}
+let cur = null; // pregunta actual
 function showQ() {
   if (L.i >= L.qs.length) return finishLesson();
   const q = L.qs[L.i];
-  const scored = L.qs.slice(0, L.i).filter((x) => !["intro", "theory", "readtext"].includes(x.type)).length;
-  const pct = L.total ? Math.min(100, (scored / (L.qs.filter((x) => !["intro", "theory", "readtext"].includes(x.type)).length)) * 100) : 0;
+  const scoredAll = L.qs.filter((x) => !NOSCORE.includes(x.type)).length;
+  const scoredDone = L.qs.slice(0, L.i).filter((x) => !NOSCORE.includes(x.type)).length;
+  const pct = scoredAll ? Math.min(100, (scoredDone / scoredAll) * 100) : 0;
   cur = { q, ready: false, value: null };
-  let body = "";
-  const R = RENDER[q.type];
-  body = R(q);
   app().innerHTML = `<div class="lesson">
-    <div class="lesson-top"><button class="x" onclick="quitLesson()">✕</button><div class="bar"><div style="width:${pct}%"></div></div>
-    <div class="combo">${L.exam ? "📝" : L.combo >= 3 ? "🔥" + L.combo : ""}</div></div>
-    <div class="q-area">${body}</div>
+    <div class="lesson-top"><button class="x" onclick="quitLesson()" aria-label="Salir">${icon("x", 28, 2.6)}</button><div class="bar"><div style="width:${pct}%"></div></div>
+    <div class="combo">${L.exam ? "📝" : L.combo >= 3 ? icon("flame", 22) + L.combo : ""}</div></div>
+    <div class="q-area">${RENDER[q.type](q)}</div>
     <div class="foot" id="foot">${footBtn(q)}</div></div>`;
+  window.scrollTo(0, 0);
   if (AFTER[q.type]) AFTER[q.type](q);
 }
 function footBtn(q) {
-  if (["intro", "theory", "readtext"].includes(q.type)) return `<button class="btn" id="go" onclick="next()">Continuar</button>`;
+  if (NOSCORE.includes(q.type)) return `<button class="btn" id="go" onclick="next()">Continuar</button>`;
   if (q.type === "match") return `<button class="btn" id="go" disabled onclick="next()">Continuar</button>`;
   return `<button class="btn" id="go" disabled onclick="check()">Comprobar</button>`;
 }
 function setReady(v) { cur.ready = v; const b = $("#go"); if (b) b.disabled = !v; }
-function chuletaLink(q) {
-  if (L.exam || !q.u) return "";
-  return `<button class="back" style="float:right" onclick="showChuleta('${q.u}')">💡 Chuleta</button>`;
+function head(tag, text, mood = "happy", q) {
+  const ch = q && !L.exam && q.u ? `<button class="link chuleta-btn" onclick="showChuleta('${q.u}')">${icon("bulb", 18)}Chuleta</button>` : "";
+  return `<div class="q-head">${fox(mood, 54)}<div class="bubble"><span class="tag">${tag}</span>${text}</div>${ch}</div>`;
 }
 function showChuleta(uid) {
   const u = unitById(uid), d = document.createElement("div");
-  d.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:50;display:flex;align-items:flex-end;justify-content:center";
-  d.innerHTML = `<div style="background:var(--bg);max-width:560px;width:100%;max-height:85vh;overflow:auto;border-radius:20px 20px 0 0;padding:16px">
-    ${u.grammar.map((g) => `<div class="theory"><h3>${esc(g.title)}</h3>${g.html}</div>`).join("")}<button class="btn blue">Cerrar</button></div>`;
-  d.onclick = (e) => { if (e.target === d || e.target.tagName === "BUTTON") d.remove(); };
+  d.className = "sheet-bg";
+  d.innerHTML = `<div class="sheet"><div class="grab"></div>${grammarCards(u)}<button class="btn blue">Entendido</button></div>`;
+  d.onclick = (e) => { if (e.target === d || e.target.closest(".btn")) d.remove(); };
   document.body.appendChild(d);
 }
 
 // ---- Render de cada tipo de pregunta
-const optBtns = (arr, render = esc) => `<div class="options">${arr.map((o, i) => `<button class="opt" data-v="${esc(o)}" onclick="selOpt(this)"><span class="k">${i + 1}</span><span>${render(o)}</span></button>`).join("")}</div>`;
+const optBtns = (arr) => `<div class="options">${arr.map((o, i) => `<button class="opt" data-v="${esc(o)}" onclick="selOpt(this)"><span class="k">${i + 1}</span><span>${esc(o)}</span></button>`).join("")}</div>`;
 function selOpt(el) {
   if (cur.locked) return; beep("tap");
   document.querySelectorAll(".opt").forEach((b) => b.classList.remove("sel"));
   el.classList.add("sel"); cur.value = el.dataset.v; setReady(true);
-  if (cur.q.type === "pick" || cur.q.type === "mc") { /* nada */ }
 }
+const noteLine = (w) => (w[3] ? `<div class="note">pasado de <b>${esc(w[3])}</b></div>` : "");
 const RENDER = {
-  intro: (q) => `<div class="q-kind">✨ Palabra nueva</div><div class="flash"><div class="emoji">${q.w[2]}</div>
-    <div class="en">${esc(q.w[0])}</div><div class="es">${esc(q.w[1])}</div>${q.w[3] ? `<div class="muted" style="margin-top:6px">pasado de <b>${esc(q.w[3])}</b></div>` : ""}
-    <button class="speak huge" onclick="say('${esc(q.w[0]).replace(/'/g, "\\'")}')">🔊</button>
-    <button class="back" onclick="say('${esc(q.w[0]).replace(/'/g, "\\'")}',true)">🐢 Más despacio</button></div>`,
-  theory: (q) => `<div class="q-kind">🧠 Chuleta de gramática</div><div class="q-title">Lee esto con calma antes de empezar</div>` +
-    unitById(q.u).grammar.map((g) => `<div class="theory"><h3>${esc(g.title)}</h3>${g.html}</div>`).join(""),
-  readtext: (q) => `<div class="q-kind">📖 Lectura</div><div class="q-title">${esc(q.title)}</div>
-    <button class="speak" onclick="say(cur.q.text)" style="margin-bottom:12px">🔊</button>
-    <div class="reading-text">${esc(q.text)}</div><p class="muted">Léelo (y escúchalo) bien. Ahora vienen preguntas de verdadero o falso.</p>`,
+  intro: (q) => `${head("Palabra nueva", "¡Escucha y repite en voz alta!", "wow")}
+    <div class="flash"><div class="flash-card"><div class="emoji">${q.w[2]}</div><div class="en">${esc(q.w[0])}</div><div class="es">${esc(q.w[1])}</div>${q.w[3] ? `<div class="muted" style="margin-top:4px">pasado de <b>${esc(q.w[3])}</b></div>` : ""}
+    ${speakBtn(`'${jsq(q.w[0])}'`, "huge", 54)}${slowBtn(`'${jsq(q.w[0])}'`)}</div></div>`,
+  theory: (q) => `${head("Gramática", "Lee esto con calma. ¡Es lo que entra en el examen!", "think")}` + grammarCards(unitById(q.u)),
+  readtext: (q) => `${head("Lectura", "Lee el texto (y escúchalo). Luego vienen preguntas de verdadero o falso.", "think")}
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">${speakBtn("cur.q.text")}<h3 style="margin:0">${esc(q.title)}</h3></div>
+    <div class="reading-text">${esc(q.text)}</div>`,
   pick: (q) => { cur.opts = shuffle([q.w[0], ...q.others.map((o) => o[0])]);
-    return `<div class="q-kind">Elige la palabra en inglés</div><div class="prompt"><div class="emoji">${q.w[2]}</div><div><div class="word">${esc(q.w[1])}</div>${q.w[3] ? `<div class="note">pasado de ${esc(q.w[3])}</div>` : ""}</div></div>` + optBtns(cur.opts); },
+    return head("Vocabulario", "¿Cómo se dice en inglés?") + `<div class="prompt"><div class="emoji">${q.w[2]}</div><div><div class="word">${esc(q.w[1])}</div>${noteLine(q.w)}</div></div>` + optBtns(cur.opts); },
   pickEs: (q) => { cur.opts = shuffle([q.w[1], ...q.others.map((o) => o[1])]);
-    return `<div class="q-kind">¿Qué significa?</div><div class="prompt"><button class="speak" onclick="say(cur.q.w[0])">🔊</button><div class="word">${esc(q.w[0])}</div></div>` + optBtns(cur.opts); },
+    return head("Vocabulario", "¿Qué significa esta palabra?") + `<div class="prompt">${speakBtn("cur.q.w[0]")}<div class="word">${esc(q.w[0])}</div></div>` + optBtns(cur.opts); },
   listen: (q) => { cur.opts = shuffle([q.w, ...q.others]).map((o) => o[2] + " " + o[1]);
-    return `<div class="q-kind">🎧 Escucha y elige</div><div class="q-title">¿Qué has oído?</div>
-      <button class="speak huge" onclick="say(cur.q.w[0])">🔊</button><div style="text-align:center;margin:-14px 0 16px"><button class="back" onclick="say(cur.q.w[0],true)">🐢 Más despacio</button></div>` + optBtns(cur.opts); },
-  type: (q) => `<div class="q-kind">✍️ Escribe en inglés</div><div class="prompt"><div class="emoji">${q.w[2]}</div><div><div class="word">${esc(q.w[1])}</div>${q.w[3] ? `<div class="note">pasado de ${esc(q.w[3])}</div>` : ""}</div></div>
-    <textarea class="type-in" id="ti" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="Escribe aquí..." oninput="cur.value=this.value;setReady(this.value.trim().length>0)"></textarea>`,
+    return head("Escucha", "Toca el altavoz. ¿Qué palabra has oído?", "wow") + speakBtn("cur.q.w[0]", "huge", 54) + slowBtn("cur.q.w[0]") + optBtns(cur.opts); },
+  type: (q) => head("Escribe", "Escríbelo en inglés.") + `<div class="prompt"><div class="emoji">${q.w[2]}</div><div><div class="word">${esc(q.w[1])}</div>${noteLine(q.w)}</div></div>
+    <textarea class="type-in" id="ti" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="Escribe aquí…" oninput="cur.value=this.value;setReady(this.value.trim().length>0)"></textarea>`,
   spell: (q) => { cur.letters = shuffle(q.w[0].split("")); cur.built = [];
-    return `<div class="q-kind">🔤 Deletrea la palabra</div><div class="prompt"><div class="emoji">${q.w[2]}</div><div><div class="word">${esc(q.w[1])}</div></div>
-      <button class="speak mini" onclick="say(cur.q.w[0])">🔊</button></div><div class="answer-line" id="al"></div>
-      <div class="bank">${cur.letters.map((l, i) => `<button class="tile letter" id="t${i}" onclick="tapTile(${i})">${esc(l)}</button>`).join("")}</div>`; },
+    return head("Deletrea", "Toca las letras en orden.") + `<div class="prompt"><div class="emoji">${q.w[2]}</div><div><div class="word">${esc(q.w[1])}</div></div><span style="margin-left:auto">${speakBtn("cur.q.w[0]", "mini", 18)}</span></div>
+      <div class="answer-line" id="al"></div><div class="bank">${cur.letters.map((l, i) => `<button class="tile letter" id="t${i}" onclick="tapTile(${i})">${esc(l)}</button>`).join("")}</div>`; },
   match: (q) => { cur.left = shuffle(q.pairs); cur.right = shuffle(q.pairs); cur.sel = null; cur.done = 0; cur.miss = 0;
-    return `<div class="q-kind">🧩 Une las parejas</div><div class="q-title">Toca una palabra y su significado</div><div class="match">
+    return head("Parejas", "Toca una palabra y luego su significado.") + `<div class="match">
       ${cur.left.map((p, i) => `<button class="opt" id="ml${i}" onclick="tapMatch('l',${i})">${esc(p[0])}</button><button class="opt" id="mr${i}" onclick="tapMatch('r',${i})">${cur.right[i][2]} ${esc(cur.right[i][1])}</button>`).join("")}</div>`; },
   mc: (q) => { cur.opts = shuffle(q.o);
-    return `<div class="q-kind">🧠 Elige la respuesta correcta ${chuletaLink(q)}</div><div class="q-title">${esc(q.q).replace("___", '<span style="color:var(--blue)">_____</span>')}</div>` + optBtns(cur.opts); },
+    return head("Gramática", "Elige la respuesta correcta.", "think", q) + `<div class="q-title">${esc(q.q).replace("___", '<span class="gap">&nbsp;</span>')}</div>` + optBtns(cur.opts); },
   order: (q) => { const words = q.s.split(" "); if (words[0] !== "I") words[0] = words[0].toLowerCase();
     cur.letters = shuffle(words); cur.built = [];
-    return `<div class="q-kind">🧱 Ordena la frase ${chuletaLink(q)}</div><div class="q-title">Toca las palabras en el orden correcto</div>
-      <div class="answer-line" id="al"></div><div class="bank">${cur.letters.map((l, i) => `<button class="tile" id="t${i}" onclick="tapTile(${i})">${esc(l)}</button>`).join("")}</div>`; },
-  write: (q) => `<div class="q-kind">✍️ Escribe la frase ${chuletaLink(q)}</div><div class="q-title">${esc(q.q)}</div>
-    <textarea class="type-in" id="ti" autocapitalize="sentences" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="Escribe en inglés..." oninput="cur.value=this.value;setReady(this.value.trim().length>0)"></textarea>`,
+    return head("Frases", "Toca las palabras en el orden correcto.", "think", q) + `<div class="answer-line" id="al"></div><div class="bank">${cur.letters.map((l, i) => `<button class="tile" id="t${i}" onclick="tapTile(${i})">${esc(l)}</button>`).join("")}</div>`; },
+  write: (q) => head("Escribe", "Escribe la frase en inglés.", "think", q) + `<div class="q-title">${esc(q.q)}</div>
+    <textarea class="type-in" id="ti" autocapitalize="sentences" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="Escribe en inglés…" oninput="cur.value=this.value;setReady(this.value.trim().length>0)"></textarea>`,
   tf: (q) => { cur.opts = ["True", "False"];
-    return `<div class="q-kind">📖 ¿Verdadero o falso?</div><details open style="margin-bottom:12px"><summary class="muted" style="font-weight:800;cursor:pointer">Ver el texto: ${esc(q.title)}</summary><div class="reading-text" style="margin-top:8px">${esc(q.text)}</div></details>
+    return head("Lectura", "¿Verdadero o falso? Mira el texto si lo necesitas.", "think") + `<details open style="margin-bottom:14px"><summary class="link">${icon("book", 18)}${esc(q.title)}</summary><div class="reading-text" style="margin-top:8px">${esc(q.text)}</div></details>
       <div class="q-title">${esc(q.s)}</div><div class="tf">
       <button class="opt" data-v="True" onclick="selOpt(this)">✅ True</button><button class="opt" data-v="False" onclick="selOpt(this)">❌ False</button></div>`; }
 };
@@ -557,7 +609,7 @@ function tapMatch(side, i) {
     cur.done++;
     if (cur.done === cur.left.length) {
       const ok = cur.miss <= 1; ok ? L.right++ : L.wrong++;
-      $("#foot").className = "foot ok"; $("#foot").innerHTML = `<div class="fb-title">${pick(PRAISE)}</div><div class="fb-text">${cur.miss ? "Fallos: " + cur.miss : "¡Sin fallos!"}</div><button class="btn" id="go" onclick="next()">Continuar</button>`;
+      showFeedback(true, pick(PRAISE), cur.miss ? "Fallos: " + cur.miss : "¡Sin fallos!");
     }
   } else {
     beep("bad"); cur.miss++;
@@ -586,6 +638,12 @@ function evaluate() {
     case "tf": return { ok: (v === "True") === q.a, sol: q.a ? "True (verdadero)" : "False (falso)" };
   }
 }
+function showFeedback(ok, title, text) {
+  const f = $("#foot");
+  f.className = "foot " + (ok ? "ok" : "bad");
+  f.innerHTML = `<div class="fb"><div class="badge-ic">${icon(ok ? "check" : "x", 28, 3.2)}</div><div><div class="fb-title">${title}</div><div class="fb-text">${text}</div></div></div>
+    <button class="btn" id="go" onclick="next()">${ok ? "Continuar" : "Entendido"}</button>`;
+}
 function check() {
   if (!cur.ready || cur.locked) return;
   cur.locked = true;
@@ -593,36 +651,29 @@ function check() {
   L.log.push({ q, r, given: cur.value });
   if (r.ok) { L.right++; L.combo++; if (q.key && S.errors[q.key]) { S.errors[q.key]--; if (S.errors[q.key] <= 0) { delete S.errors[q.key]; S.fixed++; } } }
   else { L.wrong++; L.combo = 0; if (q.key) S.errors[q.key] = Math.min(5, (S.errors[q.key] || 0) + 1); }
-  // marcar opciones
+  if (L.exam) { save(); next(); return; }
   document.querySelectorAll(".opt").forEach((b) => {
-    if (L.exam) return;
     const correct = q.type === "tf" ? (b.dataset.v === "True") === q.a
       : q.type === "listen" ? b.dataset.v === q.w[2] + " " + q.w[1]
       : q.type === "pickEs" ? b.dataset.v === q.w[1]
       : q.type === "pick" ? b.dataset.v === q.w[0] : b.dataset.v === (q.o || [])[0];
     if (correct) b.classList.add("right"); else if (b.classList.contains("sel")) b.classList.add("wrong");
   });
-  const f = $("#foot");
-  if (L.exam) { next(); return; }
+  const exp = r.exp ? `<span class="exp">💡 ${esc(r.exp)}</span>` : "";
   if (r.ok) {
     beep("ok"); if (r.say) say(r.say);
-    const combo = L.combo >= 3 && L.combo % 3 === 0 ? ` · 🔥 ¡${L.combo} seguidas!` : "";
-    f.className = "foot ok";
-    f.innerHTML = `<div class="fb-title">${r.almost ? "¡Casi perfecto!" : pick(PRAISE)}${combo}</div>
-      <div class="fb-text">${r.almost ? "Ojo con cómo se escribe: <b>" + esc(r.sol) + "</b>" : ""}${r.exp && !r.almost ? `<span class="exp">💡 ${esc(r.exp)}</span>` : ""}</div>
-      <button class="btn" id="go" onclick="next()">Continuar</button>`;
+    const combo = L.combo >= 3 && L.combo % 3 === 0 ? ` 🔥 ${L.combo} seguidas` : "";
+    showFeedback(true, (r.almost ? "¡Casi perfecto!" : pick(PRAISE)) + combo, r.almost ? "Ojo con cómo se escribe: <b>" + esc(r.sol) + "</b>" : exp);
   } else {
     beep("bad");
     if (!L.requeued.has(L.i) && q.type !== "tf") { L.requeued.add(L.qs.length); L.qs.push(Object.assign({}, q)); }
-    f.className = "foot bad";
-    f.innerHTML = `<div class="fb-title">Respuesta correcta:</div><div class="fb-text">${esc(r.sol)}${r.exp ? `<span class="exp">💡 ${esc(r.exp)}</span>` : ""}</div>
-      <button class="btn" id="go" onclick="next()">Entendido</button>`;
+    showFeedback(false, "Respuesta correcta:", esc(r.sol) + exp);
     document.querySelector(".q-area").classList.add("shake");
     if (r.say) setTimeout(() => say(r.say), 400);
   }
   save();
 }
-function next() { window.speechSynthesis && speechSynthesis.cancel(); L.i++; showQ(); }
+function next() { if (SYN && SYN.speaking) SYN.cancel(); L.i++; showQ(); }
 
 // Teclado (ordenador): Enter = comprobar / continuar · 1-4 = opción
 document.addEventListener("keydown", (e) => {
@@ -632,26 +683,25 @@ document.addEventListener("keydown", (e) => {
 });
 
 // ------------------------------------------------------------------ final de lección
+function statBox(color, label, value, ic) { return `<div class="stat" style="--sc:${color}"><small>${label}</small><b>${ic ? icon(ic, 20) : ""}${value}</b></div>`; }
 function finishLesson() {
   studying = false;
   const secs = Math.round((Date.now() - L.start) / 1000);
-  const scored = L.log.length || 1;
   let h = "";
   if (L.exam) {
-    const firstTry = L.log.filter((x) => true);
-    const right = firstTry.filter((x) => x.r.ok).length;
-    const score = Math.round((right / firstTry.length) * 100) / 10; // nota sobre 10 con un decimal
+    const right = L.log.filter((x) => x.r.ok).length, total = L.log.length || 1;
+    const score = Math.round((right / total) * 100) / 10; // nota sobre 10 con un decimal
     (S.exams[L.uid] = S.exams[L.uid] || []).push({ t: Date.now(), score });
     const gained = 20 + Math.round(score * 3); S.xp += gained;
     const pass = score >= 5;
     const mistakes = L.log.filter((x) => !x.r.ok);
-    h = `<div class="result"><div class="big-emoji">${score >= 9 ? "🏆" : score >= 7 ? "🥳" : pass ? "😊" : "💪"}</div>
-      <h1 style="color:${pass ? "var(--green)" : "var(--red)"};text-shadow:none">${score >= 9 ? "¡SOBRESALIENTE!" : score >= 7 ? "¡NOTABLE!" : score >= 6 ? "¡BIEN!" : pass ? "¡APROBADO!" : "¡Casi! Hay que repasar"}</h1>
-      <div class="grade-big ${pass ? "pass" : "fail"}">${fmtGrade(score)}</div><p class="muted">${right} de ${firstTry.length} bien · +${gained} XP</p>
-      ${mistakes.length ? `<div class="mistakes"><h3>Repasa esto:</h3>${mistakes.map((m) => `<div class="mistake">${esc(m.q.q || m.q.s || m.q.w && m.q.w[1] || "")}<br>Tú: <s>${esc(m.given || "—")}</s> · <span class="sol">${esc(m.r.sol)}</span></div>`).join("")}</div>` : ""}
-      ${!pass ? `<button class="btn blue" onclick="renderNotes('${L.uid}')">📋 Ver la chuleta</button>` : ""}
+    h = `<div class="result">${fox(pass ? "cheer" : "sad", 130)}
+      <h1 style="color:${pass ? "var(--green-d)" : "var(--red-d)"}">${score >= 9 ? "¡Sobresaliente!" : score >= 7 ? "¡Notable!" : score >= 6 ? "¡Bien!" : pass ? "¡Aprobado!" : "¡Casi! Hay que repasar"}</h1>
+      <div class="grade-big ${pass ? "pass" : "fail"}">${fmtGrade(score)}</div><p class="muted">${right} de ${total} bien · +${gained} XP</p>
+      ${mistakes.length ? `<div class="mistakes"><h3>Repasa esto:</h3>${mistakes.map((m) => `<div class="mistake">${esc(m.q.q || m.q.s || (m.q.w && m.q.w[1]) || "")}<br>Tú: <s>${esc(m.given || "—")}</s> · <span class="sol">${esc(m.r.sol)}</span></div>`).join("")}</div>` : ""}
+      ${!pass ? `<button class="btn blue" onclick="L=null;renderNotes('${L.uid}')">${icon("book", 20)} Ver la chuleta</button>` : ""}
       <button class="btn" onclick="afterLesson()">Continuar</button></div>`;
-    if (pass) { beep("win"); confetti(score >= 9 ? 70 : 35); }
+    if (pass) { beep("win"); confetti(score >= 9 ? 80 : 40); }
   } else {
     const stars = L.wrong <= 1 ? 3 : L.wrong <= 3 ? 2 : 1;
     const gained = 10 + L.right + (stars === 3 ? 5 : 0);
@@ -662,12 +712,11 @@ function finishLesson() {
       const key = L.uid + "-" + L.k, prev = S.lessons[key];
       S.lessons[key] = { stars: Math.max(stars, prev ? prev.stars : 0), n: (prev ? prev.n : 0) + 1 };
     }
-    beep("win"); confetti(stars === 3 ? 50 : 20);
-    h = `<div class="result"><div class="big-emoji">🦊</div><h1>¡Lección completada!</h1>
-      <div class="stars-big">${"⭐".repeat(stars)}${"☆".repeat(3 - stars)}</div>
-      <div class="chips"><div class="chip"><b style="color:var(--yellow)">+${gained}</b><small>XP</small></div>
-      <div class="chip"><b style="color:var(--green)">${Math.round((L.right / Math.max(1, L.right + L.wrong)) * 100)}%</b><small>Aciertos</small></div>
-      <div class="chip"><b style="color:var(--blue)">${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}</b><small>Tiempo</small></div></div>
+    beep("win"); confetti(stars === 3 ? 60 : 25);
+    const acc = Math.round((L.right / Math.max(1, L.right + L.wrong)) * 100);
+    h = `<div class="result">${fox("cheer", 130)}<h1>${L.review ? "¡Repaso completado!" : "¡Lección completada!"}</h1>
+      <div class="stars-big">${[1, 2, 3].map((n) => icon("star", 50).replace('class="ic"', `class="ic ${n > stars ? "off" : ""}"`)).join("")}</div>
+      <div class="stats">${statBox("var(--yellow)", "XP", "+" + gained, "star")}${statBox("var(--green)", "Aciertos", acc + "%", "target")}${statBox("var(--blue)", "Tiempo", Math.floor(secs / 60) + ":" + String(secs % 60).padStart(2, "0"), "clock")}</div>
       <button class="btn" onclick="afterLesson()">Continuar</button></div>`;
   }
   checkBadges(); save();
@@ -684,21 +733,23 @@ function afterLesson() {
 }
 function keepGoing(min) {
   const r = recommend();
-  app().innerHTML = `<div class="lesson"><div class="result"><div class="big-emoji">⏳</div><h1 style="color:var(--orange);text-shadow:none">¡Te quedan ${min} min!</h1>
-    <p>Un empujón más y consigues la meta de hoy 🔥</p><p class="muted">Siguiente: <b>${esc(recLabel(r))}</b></p>
-    <button class="btn" onclick="startRec()">¡Vamos!</button><button class="btn white" onclick="go('home')">Ahora no</button></div></div>`;
+  const lbl = r.review ? "Repaso de tus errores" : STEPS.find((x) => x.k === r.k).lbl + " · " + unitById(r.u).title;
+  app().innerHTML = `<div class="lesson"><div class="result">${fox("wow", 120)}<h1 style="color:var(--orange)">¡Te quedan ${min} min!</h1>
+    <p>Un empujón más y consigues la meta de hoy.</p><p class="muted">Siguiente: <b>${esc(lbl)}</b></p><div style="height:22px"></div>
+    <button class="btn" onclick="startRec()">¡Vamos!</button><button class="btn ghost" onclick="go('home')">Ahora no</button></div></div>`;
 }
 function celebrateGoal() {
-  beep("win"); confetti(90);
-  app().innerHTML = `<div class="lesson"><div class="result"><div class="big-emoji">🔥</div><h1 style="color:var(--orange);text-shadow:none">¡Meta de hoy conseguida!</h1>
-    <div class="grade-big" style="color:var(--orange)">${streak()}</div><p><b>día${streak() > 1 ? "s" : ""} de racha</b></p>
-    <p class="muted">${S.goalMin} minutos de inglés hoy. ¡Así se aprueba! Vuelve mañana para no perder la racha.</p>
+  beep("win"); confetti(100);
+  const st = streak();
+  app().innerHTML = `<div class="lesson"><div class="result">${fox("cheer", 130)}<h1 style="color:var(--orange)">¡Meta de hoy conseguida!</h1>
+    <div class="grade-big" style="color:var(--orange);display:flex;align-items:center;justify-content:center;gap:6px">${icon("flame", 70)}${st}</div><p><b>día${st > 1 ? "s" : ""} seguido${st > 1 ? "s" : ""}</b></p>
+    <p class="muted">${S.goalMin} minutos de inglés hoy. ¡Así se aprueba! Vuelve mañana para no perder la racha.</p><div style="height:22px"></div>
     <button class="btn" onclick="newBadges.length ? showBadges() : go('home')">¡Genial!</button></div></div>`;
 }
 function showBadges() {
   const id = newBadges.shift(), b = BADGES.find((x) => x.id === id);
-  beep("win"); confetti(30);
-  app().innerHTML = `<div class="lesson"><div class="result"><div class="big-emoji pop">${b.b}</div><h1>¡Nuevo logro!</h1><p style="font-size:22px;font-weight:800">${b.t}</p>
+  beep("win"); confetti(35);
+  app().innerHTML = `<div class="lesson"><div class="result"><div class="pop" style="font-size:110px;line-height:1.1">${b.b}</div><h1>¡Nuevo logro!</h1><p style="font:600 24px var(--display)">${b.t}</p><div style="height:22px"></div>
     <button class="btn" onclick="newBadges.length ? showBadges() : go('home')">Continuar</button></div></div>`;
 }
 
