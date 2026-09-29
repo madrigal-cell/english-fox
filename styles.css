@@ -206,6 +206,38 @@ details summary { list-style: none; cursor: pointer; } details summary::-webkit-
 .flash .en { font: 600 38px var(--display); margin: 12px 0 0; }
 .flash .es { font-size: 20px; color: var(--muted); font-weight: 700; }
 
+/* ---------- Juegos ---------- */
+.match.halves .opt { font-size: 15px; justify-content: flex-start; text-align: left; }
+.yesno-word { font: 600 34px var(--display); text-align: center; margin: 4px 0 22px; color: var(--blue-d); }
+.memory { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.mcard { position: relative; aspect-ratio: 3 / 4; border: 0; padding: 0; background: none; cursor: pointer; perspective: 600px; font: 800 14px "Nunito"; }
+.mcard .back, .mcard .face { position: absolute; inset: 0; border-radius: 16px; display: grid; place-items: center; padding: 6px; backface-visibility: hidden; -webkit-backface-visibility: hidden; transition: transform .35s; overflow-wrap: anywhere; line-height: 1.2; }
+.mcard .back { background: linear-gradient(145deg, #ff9d3f, var(--fox)); box-shadow: 0 5px 0 #d96a0c; }
+.mcard .back .fox { opacity: .9; }
+.mcard .face { background: var(--card); color: var(--text); border: 2px solid var(--line); box-shadow: 0 5px 0 var(--line); transform: rotateY(180deg); }
+.mcard .face.en { color: var(--blue-d); font-size: 15px; }
+.mcard.up .back { transform: rotateY(-180deg); } .mcard.up .face { transform: rotateY(0); }
+.mcard.ok .face { border-color: var(--green); background: var(--green-l); color: var(--green-d); box-shadow: 0 5px 0 var(--green); }
+.lives { display: flex; justify-content: center; gap: 4px; color: var(--red); margin-bottom: 12px; }
+.lives .off { color: var(--line); }
+.slots { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-bottom: 22px; }
+.slot { width: 38px; height: 48px; border-bottom: 4px solid var(--line-d); display: grid; place-items: center; font: 600 28px var(--display); color: var(--text); }
+.slot.on { border-color: var(--green); animation: popin .3s; }
+.slot.gap { border-color: transparent; width: 14px; }
+.kbd { display: flex; flex-direction: column; gap: 7px; align-items: center; }
+.kbd div { display: flex; gap: 5px; }
+.key { width: 31px; height: 44px; border: 2px solid var(--line); border-radius: 10px; background: var(--card); font: 800 17px "Nunito"; color: var(--text); box-shadow: 0 3px 0 var(--line); cursor: pointer; padding: 0; }
+.key.good { background: var(--green); border-color: var(--green); color: #fff; box-shadow: 0 3px 0 var(--green-d); }
+.key.bad { background: var(--soft); color: var(--line-d); box-shadow: none; }
+@media (min-width: 420px) { .key { width: 36px; } }
+.ws { display: grid; grid-template-columns: repeat(var(--n), 1fr); gap: 4px; background: var(--soft); padding: 8px; border-radius: 18px; }
+.cell { aspect-ratio: 1; border: 0; border-radius: 9px; background: var(--card); font: 600 20px var(--display); text-transform: uppercase; color: var(--text); cursor: pointer; padding: 0; box-shadow: 0 2px 0 var(--line); }
+.cell.start { background: var(--blue); color: #fff; }
+.cell.found { background: var(--fc); color: #fff; box-shadow: none; }
+.clues { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; justify-content: center; }
+.clue { background: var(--soft); border-radius: 99px; padding: 6px 12px; font-size: 15px; font-weight: 800; }
+.clue.done { background: var(--green-l); color: var(--green-d); }
+
 /* ---------- Pie con feedback ---------- */
 .foot { padding: 16px 18px; padding-bottom: max(16px, env(safe-area-inset-bottom)); border-top: 2px solid var(--line); background: var(--card); position: sticky; bottom: 0; }
 .foot.ok, .foot.bad { border-color: transparent; animation: sheet .25s cubic-bezier(.2,1.2,.5,1); }

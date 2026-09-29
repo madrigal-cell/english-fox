@@ -71,6 +71,8 @@ const ICONS = {
   bandage: '<rect x="2.5" y="8" width="19" height="8" rx="4" transform="rotate(-45 12 12)"/><path d="M10.5 10.5h.01M13.5 13.5h.01M10.5 13.5h.01M13.5 10.5h.01"/>',
   flame: '<path d="M12 2.5c.9 3.6 5.5 5.7 5.5 11a5.5 5.5 0 0 1-11 0c0-2.3 1-3.9 2.3-5 .1 2 1 3.1 2.2 3.3-.4-3.3-.3-6.3 1-9.3z" fill="currentColor" stroke="none"/>',
   star: '<path d="m12 2.8 2.8 5.8 6.3.9-4.6 4.4 1.1 6.3L12 17.2l-5.6 3 1.1-6.3L2.9 9.5l6.3-.9z" fill="currentColor" stroke="none"/>',
+  grid: '<rect x="3" y="3" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="2"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="2"/>',
+  heart: '<path d="M12 20.5s-7.6-4.6-9.4-9.3C1.2 7.5 3.5 4 7.1 4c2 0 3.5 1.1 4.9 2.9C13.4 5.1 14.9 4 16.9 4c3.6 0 5.9 3.5 4.5 7.2-1.8 4.7-9.4 9.3-9.4 9.3z" fill="currentColor" stroke="none"/>',
   lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>'
 };
 function icon(name, size = 24, sw = 2.2) {
