@@ -7,7 +7,7 @@
 const STORE_KEY = "english-fox-v1";
 const STEPS = [
   { k: "v1", lbl: "Palabras 1", icon: "chat" },
-  { k: "v2", lbl: "Palabras 2", icon: "mic" },
+  { k: "v2", lbl: "Palabras 2", icon: "grid" },
   { k: "g1", lbl: "Gramática", icon: "bulb" },
   { k: "g2", lbl: "Frases", icon: "pencil" },
   { k: "r",  lbl: "Lectura", icon: "book" },
@@ -20,7 +20,7 @@ const FOX_TIPS = [
   "15 minutos al día valen más que 2 horas el domingo.",
   "Si fallas, no pasa nada: la pregunta vuelve al final para que la aprendas.",
   "Antes de un examen, repasa la chuleta de la unidad.",
-  "Escucha cada palabra y repítela en voz alta. ¡Así se aprende!",
+  "Di cada palabra nueva en voz alta. ¡Así se aprende!",
   "Los verbos irregulares se aprenden repitiendo: went, ate, saw...",
   "En inglés los días y los meses van siempre con MAYÚSCULA.",
   "Haz el examen de la unidad: si sacas más de un 5, ¡lo tienes!"
@@ -40,7 +40,7 @@ const NOSCORE = ["intro", "theory", "readtext"];
 
 // ------------------------------------------------------------------ estado
 const defaultState = () => ({
-  name: "Santi", xp: 0, classUnit: "u1", goalMin: 15, rate: 0.85, sound: true,
+  name: "Santi", xp: 0, classUnit: "u1", goalMin: 15, rate: 0.85, sound: true, voice: false,
   days: {},      // "2026-09-27": segundos estudiados
   met: {},       // "2026-09-27": true si cumplió la meta
   lessons: {},   // "u1-v1": {stars, n}
@@ -142,6 +142,7 @@ document.addEventListener("pointerdown", unlockAudio, { capture: true });
 document.addEventListener("keydown", unlockAudio, { capture: true });
 
 function say(text, slow, fromTap) {
+  if (!S.voice && !fromTap) return;
   if (!SYN || !window.SpeechSynthesisUtterance) { if (fromTap) voiceHelp(true); return; }
   if (!voice) pickVoice();
   const clean = String(text).replace(/___/g, "blank");
@@ -186,8 +187,8 @@ function beep(kind) {
     });
   } catch (e) {}
 }
-const speakBtn = (expr, cls = "", size = 28) => `<button class="speak ${cls}" onclick="say(${expr},false,true)" aria-label="Escuchar">${icon("speaker", size)}</button>`;
-const slowBtn = (expr) => `<div class="slow"><button class="link" onclick="say(${expr},true,true)">🐢 Más despacio</button></div>`;
+const speakBtn = (expr, cls = "", size = 28) => !S.voice ? "" : `<button class="speak ${cls}" onclick="say(${expr},false,true)" aria-label="Escuchar">${icon("speaker", size)}</button>`;
+const slowBtn = (expr) => !S.voice ? "" : `<div class="slow"><button class="link" onclick="say(${expr},true,true)">🐢 Más despacio</button></div>`;
 
 // ------------------------------------------------------------------ tiempo de estudio
 let studying = false, lastAct = Date.now(), goalJustMet = false;
@@ -217,11 +218,13 @@ function checkBadges() {
 function vocabQ(u, i, forceType) {
   const w = u.vocab[i], [en] = w;
   const single = /^[a-z]+$/.test(en) && en.length <= 10;
-  let types = ["pick", "listen", "type", "pickEs"];
+  let types = ["pick", "pickEs", "type", "yesno", "guess"];
   if (single) types.push("spell");
+  if (S.voice) types.push("listen");
   const type = forceType || pick(types);
   const others = shuffle(u.vocab.filter((x) => x[0] !== en && x[1] !== w[1])).slice(0, 3);
-  return { type, u: u.id, key: "v|" + u.id + "|" + i, w, others };
+  const truth = Math.random() < 0.5; // para "¿Sí o no?"
+  return { type, u: u.id, key: "v|" + u.id + "|" + i, w, others, truth, shown: truth || !others.length ? en : others[0][0] };
 }
 function exQ(u, i) {
   const e = u.exercises[i];
@@ -240,6 +243,43 @@ function qFromKey(key, forceVocabType) {
   return null;
 }
 
+// "Une las mitades": frases de la unidad partidas por la mitad
+function halvesQ(u) {
+  const sents = u.exercises.map((e) => e.t === "order" ? e.s : e.t === "write" ? e.a[0] : null)
+    .filter((x) => x && x.split(" ").length >= 4);
+  if (sents.length < 3) return null;
+  const pairs = shuffle(sents).slice(0, 4).map((x, i) => {
+    const w = x.split(" "), cut = Math.ceil(w.length / 2);
+    return { id: "h" + i, l: w.slice(0, cut).join(" ") + "…", r: "…" + w.slice(cut).join(" ") };
+  });
+  return { type: "match", u: u.id, pairs, halves: true };
+}
+// Sopa de letras: palabras en horizontal (→) y vertical (↓)
+function wordSearch(words) {
+  const list = shuffle(words.filter((w) => /^[a-z]{3,8}$/.test(w[0]))).slice(0, 5);
+  if (list.length < 3) return null;
+  const N = 8, g = Array.from({ length: N }, () => Array(N).fill(""));
+  const placed = [];
+  for (const w of list) {
+    const word = w[0];
+    for (let t = 0; t < 200; t++) {
+      const dir = Math.random() < 0.5 ? [0, 1] : [1, 0];
+      const r = Math.floor(Math.random() * (N - (dir[0] ? word.length - 1 : 0)));
+      const c = Math.floor(Math.random() * (N - (dir[1] ? word.length - 1 : 0)));
+      let ok = true;
+      for (let k = 0; k < word.length; k++) { const ch = g[r + dir[0] * k][c + dir[1] * k]; if (ch && ch !== word[k]) { ok = false; break; } }
+      if (!ok) continue;
+      const cells = [];
+      for (let k = 0; k < word.length; k++) { g[r + dir[0] * k][c + dir[1] * k] = word[k]; cells.push((r + dir[0] * k) * N + c + dir[1] * k); }
+      placed.push({ w, cells }); break;
+    }
+  }
+  if (placed.length < 3) return null;
+  const abc = "abcdefghijklmnoprstuwy";
+  const grid = g.flat().map((ch) => ch || abc[Math.floor(Math.random() * abc.length)]);
+  return { N, grid, words: placed };
+}
+
 function buildLesson(uid, k) {
   const u = unitById(uid), first = !S.lessons[uid + "-" + k];
   const idxs = (f) => u.exercises.map((e, i) => (f(e) ? i : -1)).filter((i) => i >= 0);
@@ -251,13 +291,20 @@ function buildLesson(uid, k) {
       const chunk = range.slice(c, c + 4);
       if (first) chunk.forEach((i) => qs.push({ type: "intro", w: u.vocab[i] }));
       shuffle(chunk).forEach((i) => qs.push(vocabQ(u, i)));
-      if (chunk.length >= 3) qs.push({ type: "match", u: uid, pairs: chunk.map((i) => u.vocab[i]) });
+      if (chunk.length >= 3) {
+        const pairs = chunk.map((i) => ({ id: u.vocab[i][0], l: u.vocab[i][0], r: u.vocab[i][2] + " " + u.vocab[i][1] }));
+        qs.push({ type: (c / 4) % 2 ? "match" : "memory", u: uid, pairs });
+      }
     }
+    const ws = wordSearch(range.map((i) => u.vocab[i]));
+    if (ws) qs.push(Object.assign({ type: "wordsearch", u: uid }, ws));
   } else if (k === "g1") {
     qs.push({ type: "theory", u: uid });
     shuffle(idxs((e) => e.t === "mc")).slice(0, 10).forEach((i) => qs.push(exQ(u, i)));
   } else if (k === "g2") {
     const a = idxs((e) => e.t !== "mc"), b = shuffle(idxs((e) => e.t === "mc")).slice(0, 4);
+    const halves = halvesQ(u);
+    if (halves) qs.push(halves);
     shuffle(a.concat(b)).forEach((i) => qs.push(exQ(u, i)));
   } else if (k === "r") {
     qs.push({ type: "readtext", u: uid, text: u.reading.text, title: u.reading.title });
@@ -274,7 +321,7 @@ function buildLesson(uid, k) {
 }
 function buildReview() {
   const keys = shuffle(Object.keys(S.errors)).slice(0, 12);
-  return keys.map((k) => qFromKey(k, pick(["type", "pick", "listen"]))).filter(Boolean);
+  return keys.map((k) => qFromKey(k, pick(["type", "pick", "guess"]))).filter(Boolean);
 }
 function errorCount() { return Object.keys(S.errors).length; }
 
@@ -420,8 +467,10 @@ function renderParents() {
     <label class="lbl">Velocidad de la voz</label>
     <select onchange="S.rate=+this.value;save();say('Hello! How are you today?',false,true)">${[[0.7, "Lenta"], [0.85, "Normal"], [1, "Rápida"]].map(([v, l]) => `<option value="${v}" ${v === S.rate ? "selected" : ""}>${l}</option>`).join("")}</select>
     <label class="switch">Sonidos de acierto y fallo <input type="checkbox" ${S.sound ? "checked" : ""} onchange="S.sound=this.checked;save()"></label>
-    <button class="btn blue small" style="margin-top:10px" onclick="testVoice()">${icon("speaker", 20)} Probar el sonido</button>
-    <p class="muted" style="font-size:13px;margin:10px 0 0">Voz: ${voice ? esc(voice.name) + " (" + esc(voice.lang) + ")" : SYN ? "cargando…" : "este navegador no tiene voz"}</p></div>`;
+    <label class="switch">Voz en inglés (la del dispositivo) <input type="checkbox" ${S.voice ? "checked" : ""} onchange="S.voice=this.checked;save();renderParents()"></label>
+    <p class="muted" style="font-size:13px;margin:0 0 8px">Apagada por defecto: la voz del sistema no tiene buen acento. Si la enciendes, vuelven los ejercicios de escuchar.</p>
+    ${S.voice ? `<button class="btn blue small" onclick="testVoice()">${icon("speaker", 20)} Probar la voz</button>
+    <p class="muted" style="font-size:13px;margin:10px 0 0">Voz: ${voice ? esc(voice.name) + " (" + esc(voice.lang) + ")" : SYN ? "cargando…" : "este navegador no tiene voz"}</p>` : ""}</div>`;
   h += `<div class="card"><h3>${icon("target", 20)}Progreso por unidad</h3>`;
   UNITS.forEach((u) => {
     const d = STEPS.filter((s) => stepDone(u.id, s.k)).length, be = bestExam(u.id);
@@ -515,7 +564,7 @@ function showQ() {
 }
 function footBtn(q) {
   if (NOSCORE.includes(q.type)) return `<button class="btn" id="go" onclick="next()">Continuar</button>`;
-  if (q.type === "match") return `<button class="btn" id="go" disabled onclick="next()">Continuar</button>`;
+  if (["match", "memory", "wordsearch", "guess"].includes(q.type)) return `<button class="btn" id="go" disabled onclick="next()">Continuar</button>`;
   return `<button class="btn" id="go" disabled onclick="check()">Comprobar</button>`;
 }
 function setReady(v) { cur.ready = v; const b = $("#go"); if (b) b.disabled = !v; }
@@ -540,11 +589,11 @@ function selOpt(el) {
 }
 const noteLine = (w) => (w[3] ? `<div class="note">pasado de <b>${esc(w[3])}</b></div>` : "");
 const RENDER = {
-  intro: (q) => `${head("Palabra nueva", "¡Escucha y repite en voz alta!", "wow")}
+  intro: (q) => `${head("Palabra nueva", S.voice ? "¡Escucha y repite en voz alta!" : "Mírala bien y dila en voz alta. ¡Luego te la pregunto!", "wow")}
     <div class="flash"><div class="flash-card"><div class="emoji">${q.w[2]}</div><div class="en">${esc(q.w[0])}</div><div class="es">${esc(q.w[1])}</div>${q.w[3] ? `<div class="muted" style="margin-top:4px">pasado de <b>${esc(q.w[3])}</b></div>` : ""}
     ${speakBtn(`'${jsq(q.w[0])}'`, "huge", 54)}${slowBtn(`'${jsq(q.w[0])}'`)}</div></div>`,
   theory: (q) => `${head("Gramática", "Lee esto con calma. ¡Es lo que entra en el examen!", "think")}` + grammarCards(unitById(q.u)),
-  readtext: (q) => `${head("Lectura", "Lee el texto (y escúchalo). Luego vienen preguntas de verdadero o falso.", "think")}
+  readtext: (q) => `${head("Lectura", "Lee el texto con calma. Luego vienen preguntas de verdadero o falso.", "think")}
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">${speakBtn("cur.q.text")}<h3 style="margin:0">${esc(q.title)}</h3></div>
     <div class="reading-text">${esc(q.text)}</div>`,
   pick: (q) => { cur.opts = shuffle([q.w[0], ...q.others.map((o) => o[0])]);
@@ -559,8 +608,27 @@ const RENDER = {
     return head("Deletrea", "Toca las letras en orden.") + `<div class="prompt"><div class="emoji">${q.w[2]}</div><div><div class="word">${esc(q.w[1])}</div></div><span style="margin-left:auto">${speakBtn("cur.q.w[0]", "mini", 18)}</span></div>
       <div class="answer-line" id="al"></div><div class="bank">${cur.letters.map((l, i) => `<button class="tile letter" id="t${i}" onclick="tapTile(${i})">${esc(l)}</button>`).join("")}</div>`; },
   match: (q) => { cur.left = shuffle(q.pairs); cur.right = shuffle(q.pairs); cur.sel = null; cur.done = 0; cur.miss = 0;
-    return head("Parejas", "Toca una palabra y luego su significado.") + `<div class="match">
-      ${cur.left.map((p, i) => `<button class="opt" id="ml${i}" onclick="tapMatch('l',${i})">${esc(p[0])}</button><button class="opt" id="mr${i}" onclick="tapMatch('r',${i})">${cur.right[i][2]} ${esc(cur.right[i][1])}</button>`).join("")}</div>`; },
+    return (q.halves ? head("Une las mitades", "Junta cada principio de frase con su final.", "think", q) : head("Enlaza", "Toca una palabra y luego su significado."))
+      + `<div class="match ${q.halves ? "halves" : ""}">
+      ${cur.left.map((p, i) => `<button class="opt" id="ml${i}" onclick="tapMatch('l',${i})">${esc(p.l)}</button><button class="opt" id="mr${i}" onclick="tapMatch('r',${i})">${esc(cur.right[i].r)}</button>`).join("")}</div>`; },
+  memory: (q) => { cur.cards = shuffle(q.pairs.flatMap((p) => [{ id: p.id, t: p.l, en: true }, { id: p.id, t: p.r }])); cur.open = []; cur.done = 0; cur.miss = 0; cur.busy = false;
+    return head("Memory", "Da la vuelta a dos cartas. ¡Busca cada palabra con su significado!", "wow") +
+      `<div class="memory">${cur.cards.map((c, i) => `<button class="mcard" id="mc${i}" onclick="flipCard(${i})"><span class="back">${fox("happy", 44)}</span><span class="face ${c.en ? "en" : ""}">${esc(c.t)}</span></button>`).join("")}</div>`; },
+  yesno: (q) => { cur.opts = ["yes", "no"];
+    return head("¿Sí o no?", "¿Esta palabra en inglés significa lo mismo?", "think") + `<div class="prompt"><div class="emoji">${q.w[2]}</div><div><div class="word">${esc(q.w[1])}</div>${noteLine(q.w)}</div></div>
+      <div class="yesno-word">= ${esc(q.shown)} ?</div><div class="tf">
+      <button class="opt" data-v="yes" onclick="selOpt(this)">✅ Sí</button><button class="opt" data-v="no" onclick="selOpt(this)">❌ No</button></div>`; },
+  guess: (q) => { cur.guessed = new Set([q.w[0][0].toLowerCase()]); cur.lives = 5; cur.bad = new Set();
+    const rows = ["qwertyuiop", "asdfghjkl", "zxcvbnm"];
+    return head("Adivina la palabra", "¿Cómo se dice en inglés? Toca las letras. ¡Tienes 5 vidas!", "think") +
+      `<div class="prompt"><div class="emoji">${q.w[2]}</div><div><div class="word">${esc(q.w[1])}</div>${noteLine(q.w)}</div></div>
+      <div class="lives" id="lives"></div><div class="slots" id="slots"></div>
+      <div class="kbd">${rows.map((r) => `<div>${r.split("").map((ch) => `<button class="key" id="k-${ch}" onclick="guessLetter('${ch}')">${ch}</button>`).join("")}</div>`).join("")}</div>`; },
+  wordsearch: (q) => { cur.found = new Set(); cur.start = null; cur.gaveUp = false;
+    return head("Sopa de letras", "Busca en inglés estas palabras. Toca la primera letra y luego la última.", "wow") +
+      `<div class="ws" style="--n:${q.N}">${q.grid.map((ch, i) => `<button class="cell" id="c${i}" onclick="tapCell(${i})">${ch}</button>`).join("")}</div>
+      <div class="clues">${q.words.map((x, i) => `<span class="clue" id="cl${i}">${x.w[2]} ${esc(x.w[1])}<b></b></span>`).join("")}</div>
+      <div style="text-align:center;margin-top:12px"><button class="link" onclick="giveUpWs()">Me rindo, enséñamelas</button></div>`; },
   mc: (q) => { cur.opts = shuffle(q.o);
     return head("Gramática", "Elige la respuesta correcta.", "think", q) + `<div class="q-title">${esc(q.q).replace("___", '<span class="gap">&nbsp;</span>')}</div>` + optBtns(cur.opts); },
   order: (q) => { const words = q.s.split(" "); if (words[0] !== "I") words[0] = words[0].toLowerCase();
@@ -574,6 +642,7 @@ const RENDER = {
       <button class="opt" data-v="True" onclick="selOpt(this)">✅ True</button><button class="opt" data-v="False" onclick="selOpt(this)">❌ False</button></div>`; }
 };
 const AFTER = {
+  guess: () => drawGuess(),
   intro: (q) => setTimeout(() => say(q.w[0]), 250),
   pickEs: (q) => setTimeout(() => say(q.w[0]), 250),
   listen: (q) => setTimeout(() => say(q.w[0]), 300),
@@ -599,12 +668,11 @@ function tapMatch(side, i) {
   if (!cur.sel || cur.sel.side === side) {
     document.querySelectorAll(".match .opt").forEach((b) => { if (b.id.startsWith("m" + side)) b.classList.remove("sel"); });
     el.classList.add("sel"); cur.sel = { side, i };
-    if (side === "l") say(cur.left[i][0]);
     return;
   }
   const li = side === "l" ? i : cur.sel.i, ri = side === "r" ? i : cur.sel.i;
   const a = $("#ml" + li), b = $("#mr" + ri);
-  if (cur.left[li][0] === cur.right[ri][0]) {
+  if (cur.left[li].id === cur.right[ri].id) {
     beep("ok"); [a, b].forEach((x) => { x.classList.remove("sel"); x.classList.add("right"); setTimeout(() => x.classList.add("gone"), 250); });
     cur.done++;
     if (cur.done === cur.left.length) {
@@ -616,6 +684,68 @@ function tapMatch(side, i) {
     [a, b].forEach((x) => { x.classList.add("wrong", "shake"); setTimeout(() => x.classList.remove("wrong", "shake", "sel"), 450); });
   }
   cur.sel = null;
+}
+
+// Memory
+function flipCard(i) {
+  const el = $("#mc" + i);
+  if (cur.busy || el.classList.contains("up")) return;
+  beep("tap"); el.classList.add("up"); cur.open.push(i);
+  if (cur.open.length < 2) return;
+  const [a, b] = cur.open; cur.open = [];
+  if (cur.cards[a].id === cur.cards[b].id) {
+    setTimeout(() => { beep("ok"); [a, b].forEach((k) => $("#mc" + k).classList.add("ok")); }, 250);
+    if (++cur.done === cur.cards.length / 2) {
+      const ok = cur.miss <= 4; ok ? L.right++ : L.wrong++;
+      setTimeout(() => showFeedback(true, pick(PRAISE), cur.miss ? "Parejas encontradas con " + cur.miss + " fallo" + (cur.miss > 1 ? "s" : "") : "¡A la primera!"), 500);
+    }
+  } else {
+    cur.miss++; cur.busy = true;
+    setTimeout(() => { [a, b].forEach((k) => $("#mc" + k).classList.remove("up")); cur.busy = false; }, 900);
+  }
+}
+// Adivina la palabra
+function drawGuess() {
+  const w = cur.q.w[0];
+  $("#slots").innerHTML = w.split("").map((ch) => /[a-zñ]/i.test(ch)
+    ? `<span class="slot ${cur.guessed.has(ch.toLowerCase()) ? "on" : ""}">${cur.guessed.has(ch.toLowerCase()) || cur.revealAll ? ch : ""}</span>`
+    : `<span class="slot gap">${ch === " " ? "" : ch}</span>`).join("");
+  $("#lives").innerHTML = [1, 2, 3, 4, 5].map((n) => icon("heart", 24).replace('class="ic"', `class="ic ${n > cur.lives ? "off" : ""}"`)).join("");
+}
+function guessLetter(ch) {
+  if (cur.locked || cur.guessed.has(ch) || cur.bad.has(ch)) return;
+  const w = cur.q.w[0].toLowerCase(), key = $("#k-" + ch);
+  if (w.includes(ch)) { beep("tap"); cur.guessed.add(ch); key.classList.add("good"); }
+  else { beep("bad"); cur.bad.add(ch); cur.lives--; key.classList.add("bad"); $("#lives").classList.add("shake"); setTimeout(() => $("#lives") && $("#lives").classList.remove("shake"), 400); }
+  const complete = w.split("").every((c) => !/[a-zñ]/.test(c) || cur.guessed.has(c));
+  drawGuess();
+  if (complete || cur.lives <= 0) {
+    if (!complete) { cur.revealAll = true; drawGuess(); }
+    cur.value = complete ? "ok" : "fail"; cur.ready = true; check();
+  }
+}
+// Sopa de letras
+function tapCell(i) {
+  if (cur.locked) return;
+  const q = cur.q, el = $("#c" + i);
+  if (cur.start === null) { beep("tap"); cur.start = i; el.classList.add("start"); return; }
+  const a = cur.start; cur.start = null; $("#c" + a).classList.remove("start");
+  const hit = q.words.findIndex((x, k) => !cur.found.has(k) && ((x.cells[0] === a && x.cells[x.cells.length - 1] === i) || (x.cells[0] === i && x.cells[x.cells.length - 1] === a)));
+  if (hit < 0) { if (a !== i) { beep("bad"); el.classList.add("shake"); setTimeout(() => el.classList.remove("shake"), 400); } return; }
+  markFound(hit); beep("ok");
+  if (cur.found.size === q.words.length) { L.right++; cur.locked = true; showFeedback(true, pick(PRAISE), "¡Has encontrado todas las palabras!"); }
+}
+function markFound(k) {
+  const x = cur.q.words[k]; cur.found.add(k);
+  x.cells.forEach((c) => { const el = $("#c" + c); el.classList.add("found"); el.style.setProperty("--fc", ["#58cc02", "#1cb0f6", "#ff9600", "#a560f0", "#ff4b4b"][k % 5]); });
+  const cl = $("#cl" + k); cl.classList.add("done"); cl.querySelector("b").textContent = " = " + x.w[0];
+}
+function giveUpWs() {
+  if (cur.locked) return;
+  cur.q.words.forEach((x, k) => { if (!cur.found.has(k)) markFound(k); });
+  cur.locked = true; L.wrong++;
+  const list = cur.q.words.map((x) => x.w[0]).join(", ");
+  showFeedback(false, "¡La próxima vez las encuentras!", "Eran: " + esc(list));
 }
 
 // ---- Comprobar
@@ -636,6 +766,8 @@ function evaluate() {
     case "order": return { ok: norm(v) === norm(q.s), sol: q.s + (/^(Is|Are|Do|Does|Did|Can|Has|Have|Where|What|How|When|Were|Was)\b/.test(q.s) ? "?" : "."), say: q.s };
     case "write": { const a = norm(v); return { ok: q.a.some((x) => norm(x) === a), sol: q.a[0], say: q.a[0] }; }
     case "tf": return { ok: (v === "True") === q.a, sol: q.a ? "True (verdadero)" : "False (falso)" };
+    case "yesno": return { ok: (v === "yes") === q.truth, sol: q.truth ? "Sí: " + q.w[1] + " = " + q.w[0] : "No. " + q.w[1] + " = " + q.w[0] + " (" + q.shown + " es otra cosa)" };
+    case "guess": return { ok: v === "ok", sol: q.w[0] };
   }
 }
 function showFeedback(ok, title, text) {
@@ -654,6 +786,7 @@ function check() {
   if (L.exam) { save(); next(); return; }
   document.querySelectorAll(".opt").forEach((b) => {
     const correct = q.type === "tf" ? (b.dataset.v === "True") === q.a
+      : q.type === "yesno" ? (b.dataset.v === "yes") === q.truth
       : q.type === "listen" ? b.dataset.v === q.w[2] + " " + q.w[1]
       : q.type === "pickEs" ? b.dataset.v === q.w[1]
       : q.type === "pick" ? b.dataset.v === q.w[0] : b.dataset.v === (q.o || [])[0];
@@ -666,7 +799,7 @@ function check() {
     showFeedback(true, (r.almost ? "¡Casi perfecto!" : pick(PRAISE)) + combo, r.almost ? "Ojo con cómo se escribe: <b>" + esc(r.sol) + "</b>" : exp);
   } else {
     beep("bad");
-    if (!L.requeued.has(L.i) && q.type !== "tf") { L.requeued.add(L.qs.length); L.qs.push(Object.assign({}, q)); }
+    if (!L.requeued.has(L.i) && q.type !== "tf" && q.type !== "yesno") { L.requeued.add(L.qs.length); L.qs.push(Object.assign({}, q)); }
     showFeedback(false, "Respuesta correcta:", esc(r.sol) + exp);
     document.querySelector(".q-area").classList.add("shake");
     if (r.say) setTimeout(() => say(r.say), 400);
