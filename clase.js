@@ -103,9 +103,13 @@ UNITS.splice(1, 0,
 );
 
 // Marca la unidad de clase una sola vez por cambio (luego papá puede cambiarla a mano)
+// y pone el nombre del alumno si llega en la dirección (?nombre=Mario)
 (function () {
   try {
     var KEY = "english-fox-v1", s = JSON.parse(localStorage.getItem(KEY) || "{}");
-    if (s.classUnitFrom !== CLASS_UNIT) { s.classUnit = CLASS_UNIT; s.classUnitFrom = CLASS_UNIT; localStorage.setItem(KEY, JSON.stringify(s)); }
+    var cambio = false, nombre = new URLSearchParams(location.search).get("nombre");
+    if (s.classUnitFrom !== CLASS_UNIT) { s.classUnit = CLASS_UNIT; s.classUnitFrom = CLASS_UNIT; cambio = true; }
+    if (nombre && s.name !== nombre) { s.name = nombre; cambio = true; }   // ?nombre=Mario (lo abre el aula de Mario)
+    if (cambio) localStorage.setItem(KEY, JSON.stringify(s));
   } catch (e) {}
 })();
